@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+resources/cloudflared
+resources/cloudflared.exe
+resources/cloudflared-arm64
+resources/cloudflared-x64
+resources/cloudflared-amd64
+*.log
+.DS_Store
+Thumbs.db
+.github/

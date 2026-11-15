@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>智桥-zhiqiao</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside class="side">
+  <div class="brand">
+    <img class="logo" src="icon.png" alt="智桥-zhiqiao">
+    <div>
+      <div class="bname">智桥-zhiqiao</div>
+      <div class="bsub">让 AI 操作这台电脑</div>
+    </div>
+  </div>
+
+  <nav class="nav">
+    <button class="navitem active" data-page="home">
+      <span class="dot"></span> 概览
+    </button>
+    <button class="navitem" data-page="connect">
+      <span class="dot"></span> 连接 AI
+    </button>
+    <button class="navitem" data-page="access">
+      <span class="dot"></span> 权限范围
+    </button>
+    <button class="navitem" data-page="tools">
+      <span class="dot"></span> 可用工具
+    </button>
+    <button class="navitem" data-page="about">
+      <span class="dot"></span> 关于
+    </button>
+  </nav>
+
+  <div class="sidefoot">
+    <div id="sideState" class="pill">读取中…</div>
+  </div>
+</aside>
+
+<main class="main">
+
+  <!-- ---------------------------------------------------------- 概览 -->
+  <section class="page" id="page-home">
+    <header class="ph">
+      <h1>概览</h1>
+      <p>服务状态、公网地址和最近活动。</p>
+    </header>
+
+    <div class="hero" id="heroCard">
+      <div class="orb" id="heroOrb"></div>
+      <div class="heroText">
+        <div class="heroTitle" id="heroTitle">正在启动…</div>
+        <div class="heroSub" id="heroSub"></div>
+      </div>
+      <div class="heroActions">
+        <button class="btn primary" id="btnService">启动服务</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="cardHead">
+          <h3>公网地址</h3>
+          <button class="btn xs" id="btnTunnel">开启隧道</button>
+        </div>
+        <div class="urlBox" id="publicUrlBox">
+          <code id="publicUrl">隧道未开启</code>
+        </div>
+        <div class="row">
+          <button class="btn sm" id="copyUrl">复制地址</button>
+          <button class="btn sm" id="copyConfig">复制完整配置</button>
+        </div>
+        <p class="hint" id="tunnelHint">开启后得到一个临时公网地址，重启会变。</p>
+      </div>
+
+      <div class="card">
+        <div class="cardHead"><h3>本地地址</h3></div>
+        <div class="urlBox"><code id="localUrl">—</code></div>
+        <div class="row">
+          <button class="btn sm" id="copyLocal">复制</button>
+        </div>
+        <p class="hint">只在本机可用，配合客户端调试。</p>
+      </div>
+
+      <div class="card stat">
+        <div class="statNum" id="statRequests">0</div>
+        <div class="statLabel">累计请求</div>
+      </div>
+
+      <div class="card stat">
+        <div class="statNum" id="statCalls">0</div>
+        <div class="statLabel">工具调用</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead"><h3>最近活动</h3></div>
+      <div class="activity" id="activityList">
+        <div class="empty">还没有调用记录</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------- 连接 AI -->
+  <section class="page hidden" id="page-connect">
+    <header class="ph">
+      <h1>连接 AI</h1>
+      <p>把下面的配置填到 ChatGPT 或 Claude 的 MCP 连接器里。</p>
+    </header>
+
+    <div class="duo">
+      <div class="card">
+        <div class="cardHead">
+          <h3>连接配置</h3>
+          <button class="btn xs" id="copyConfig2">复制</button>
+        </div>
+        <pre class="code" id="configPreview">—</pre>
+        <p class="hint">
+          <b>如果客户端要求 OAuth 身份验证（ChatGPT 就是这样）：</b><br>
+          只填上面的 URL，身份验证选 OAuth，浏览器会打开授权页，
+          把右边「访问令牌」粘贴进去即可。不需要手动填 Header。
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h3>访问令牌</h3>
+          <button class="btn xs danger" id="regenToken">重新生成</button>
+        </div>
+        <div class="urlBox"><code id="tokenText">—</code></div>
+        <p class="hint">
+          OAuth 授权页要粘贴这个。<br>
+          令牌泄露等于把权限交出去。重新生成后，所有已连接的 AI 都要重新授权。<br><br>
+          <b>如果客户端支持自定义 Header：</b>用左边那段完整配置即可。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------ 权限范围 -->
+  <section class="page hidden" id="page-access">
+    <header class="ph">
+      <h1>权限范围</h1>
+      <p>AI 只能访问下面这些文件夹，其他位置一律拒绝。</p>
+    </header>
+
+    <div class="card">
+      <div class="cardHead">
+        <h3>允许的文件夹</h3>
+        <button class="btn xs primary" id="addRoot">添加文件夹</button>
+      </div>
+      <div class="roots" id="rootList"></div>
+      <p class="hint">
+        至少保留一个。删掉全部会退回默认的桌面/文档/下载。
+      </p>
+    </div>
+
+    <div class="duo">
+      <div class="card">
+        <div class="cardHead"><h3>执行命令</h3></div>
+        <label class="switchRow">
+          <input type="checkbox" id="allowExec">
+          <span>
+            <b>允许运行 shell 命令</b>
+            <em>关闭后 AI 只能读写文件，不能执行程序。建议先用这个状态。</em>
+          </span>
+        </label>
+      </div>
+
+      <div class="card">
+        <div class="cardHead"><h3>启动行为</h3></div>
+        <label class="switchRow">
+          <input type="checkbox" id="autoTunnel">
+          <span>
+            <b>启动时自动开启隧道</b>
+            <em>打开程序就拿到公网地址，省一步操作。</em>
+          </span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="startMin">
+          <span>
+            <b>启动时最小化到托盘</b>
+            <em>开机自启时比较安静。</em>
+          </span>
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------- 工具列表 -->
+  <section class="page hidden" id="page-tools">
+    <header class="ph">
+      <h1>可用工具</h1>
+      <p>AI 能调用的全部能力。</p>
+    </header>
+    <div class="tools" id="toolList"></div>
+  </section>
+
+  <!-- ------------------------------------------------------------ 关于 -->
+  <section class="page hidden" id="page-about">
+    <header class="ph">
+      <h1>关于</h1>
+      <p>智桥 — 轻量的 MCP 桥接工具。</p>
+    </header>
+
+    <div class="card">
+      <div class="cardHead"><h3>它做什么</h3></div>
+      <p class="para">
+        在本机跑一个 MCP 服务，通过 Cloudflare 临时隧道暴露到公网，
+        让网页上的 AI 能读写你指定的文件夹、执行命令。
+        不依赖任何第三方账号，也没有会员限制。
+      </p>
+    </div>
+
+    <div class="duo">
+      <div class="card">
+        <div class="cardHead"><h3>安全须知</h3></div>
+        <ul class="list">
+          <li>公网地址没有额外保护，<b>地址 + 令牌</b>泄露就等于开门。</li>
+          <li>不用的时候请关闭隧道，或直接退出程序。</li>
+          <li>「允许运行命令」风险最高，不确定就先关掉。</li>
+          <li>权限范围是硬边界，路径穿越和符号链接都会被拦。</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="cardHead">
+          <h3>配置文件</h3>
+          <button class="btn xs" id="openCfgDir">打开目录</button>
+        </div>
+        <div class="urlBox"><code id="cfgDir">—</code></div>
+        <p class="hint">卸载时删掉整个文件夹即可，程序不写注册表。</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
