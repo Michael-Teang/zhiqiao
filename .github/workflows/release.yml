@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: node scripts/fetch-cloudflared.cjs
+      - run: node scripts/pack-win.cjs
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.zip
+
+  mac:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: node scripts/fetch-cloudflared.cjs
+      - run: bash scripts/pack-mac.sh ${{ matrix.arch }}
+      - run: |
+          cd dist
+          zip -r "智桥-zhiqiao-1.1.0-mac-${{ matrix.arch }}.zip" "智桥-zhiqiao-darwin-${{ matrix.arch }}"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

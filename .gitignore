@@ -9,4 +9,3 @@ resources/cloudflared-amd64
 *.log
 .DS_Store
 Thumbs.db
-.github/
