@@ -1,49 +1,91 @@
 # 智桥-zhiqiao
 
-让网页上的 AI（ChatGPT / Claude）通过 MCP 协议操作这台电脑。
+**让 ChatGPT / Claude 等网页版 AI，通过 MCP 协议直接操作你的电脑。**
 
-智桥在本机跑一个 **MCP（Model Context Protocol）服务**，监听 `127.0.0.1:8765`，可选地通过 Cloudflare 临时隧道暴露到公网，让网页版 AI 客户端能读写你指定的文件夹、执行命令。
+本机运行一个 MCP 服务，AI 就能在你划定的文件夹范围内读写文件、搜索内容、执行命令；需要远程使用时，一键通过 Cloudflare 临时隧道暴露到公网，手机、平板、公司电脑上的 AI 都能连。
 
-- 不依赖任何第三方账号
-- 没有会员限制
-- 权限范围是硬边界：路径穿越、符号链接逃逸都会被拦
-- 支持两种连接方式：OAuth 2.1 流程（ChatGPT）和自定义 Header（Claude）
+---
 
-## 一、它是什么
+## 软件介绍
 
-一个 Electron 桌面应用。主进程负责：
+### 这是什么
 
-| 模块 | 职责 |
+智桥-zhiqiao 是一个 Windows / macOS 桌面软件，它在你电脑上架起一座桥：
+
+```
+网页 AI（ChatGPT / Claude）
+        │  MCP 协议（HTTPS）
+        ▼
+Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
+        │
+        ▼
+你的电脑（指定文件夹 + 可选命令执行）
+```
+
+装上它之后，你在网页上对 AI 说「把下载文件夹里的报告整理成表格」，AI 就真的能读到你电脑里的文件并执行操作——不再只是聊文字。
+
+### 给谁用
+
+- 想让 ChatGPT / Claude 干实活的人：整理文件、批量重命名、跑脚本、查系统信息
+- 不想把文件上传到第三方网盘的隐私敏感用户：数据全程只在你自己的电脑上
+- 需要临时远程操作自己电脑的人：开隧道拿公网地址，手机浏览器里的 AI 也能连
+
+### 核心特性
+
+- **零依赖、零账号**：不注册任何服务，不登录任何平台，装完即用
+- **两种连接方式**：OAuth 2.1 授权流程（ChatGPT 要求）和自定义 Header（Claude 等），可同时用
+- **硬边界权限**：AI 只能访问你指定的文件夹，路径穿越（`../`）和符号链接逃逸都会被拦截
+- **命令黑名单**：`format`、`diskpart`、`rm -rf /` 等危险命令默认拒绝
+- **一键公网隧道**：内置 cloudflared，点一下拿到 `*.trycloudflare.com` 临时地址，重启即失效
+- **令牌可控**：访问令牌随时重新生成，旧连接立即失效
+- **绿色卸载**：不写注册表，删除文件夹即卸载
+
+### 10 个内置工具
+
+| 工具 | 作用 |
 |---|---|
-| `electron/main.js` | 窗口、托盘、IPC |
-| `electron/preload.cjs` | contextBridge 桥，只暴露窄接口 |
-| `src/service.js` | HTTP 服务器 + cloudflared 隧道管理 |
-| `src/mcp.js` | MCP 协议层（JSON-RPC over streamable HTTP） |
-| `src/oauth.js` | 最小 OAuth 2.1 授权服务器（PKCE） |
-| `src/tools.js` | AI 可调用的 10 个工具 |
-| `src/pathsafe.js` | 路径白名单校验（防 `../`、防符号链接逃逸） |
-| `src/config.js` | 配置读写，存于 Electron userData |
-| `ui/` | 控制面板界面 |
+| `read_file` | 读文本文件（拒绝返回二进制） |
+| `write_file` | 写文件，可追加 |
+| `list_dir` | 列目录，可递归 3 层 |
+| `search_files` | 正则搜索文件内容 |
+| `file_info` | 查文件类型 / 大小 / 时间戳 |
+| `run_command` | 执行 shell 命令（可关闭） |
+| `system_info` | 主机名 / 平台 / CPU / 内存 |
+| `make_dir` | 建目录 |
+| `move_path` | 移动 / 重命名 |
+| `delete_path` | 删除文件或目录 |
 
-## 二、AI 能调用的工具
+---
 
-`read_file` / `write_file` / `list_dir` / `search_files` / `file_info` /
-`run_command` / `system_info` / `make_dir` / `move_path` / `delete_path`
+## 快速开始
 
-所有文件工具都经过 `pathsafe.assertAllowed`，只能访问「权限范围」里列出的文件夹。
+### 下载安装包
 
-## 三、连接 AI
+最新版本见 [Releases](https://github.com/Michael-Teang/zhiqiao/releases)：
 
-启动程序后点「开启隧道」，拿到公网地址。
+| 平台 | 安装包 |
+|---|---|
+| Windows 10/11 x64 | `zhiqiao-1.1.0-win64.zip`（绿色版，解压即用） |
+| macOS Apple 芯片 (M1–M4) | `zhiqiao-1.1.0-mac-arm64.zip` |
+| macOS Intel | `zhiqiao-1.1.0-mac-x64.zip` |
 
-**方式 A：客户端要求 OAuth（ChatGPT）**
+### 三步连上 AI
+
+1. 打开智桥-zhiqiao，点「开启隧道」，等 5–15 秒
+2. 出现公网地址后点「复制完整配置」
+3. 粘贴到 ChatGPT / Claude 的 MCP 连接器里
+
+**Windows**：解压后双击 `智桥-zhiqiao.exe`。
+**macOS**：解压后拖进「应用程序」。首次打开被 Gatekeeper 拦截时：系统设置 → 隐私与安全性 → 仍要打开；或终端执行 `xattr -cr /Applications/智桥-zhiqiao.app`。
+
+### 连接方式 A：OAuth（ChatGPT）
 
 1. URL 填 `https://xxxx.trycloudflare.com/mcp`
-2. 身份验证选 OAuth
+2. 身份验证选 **OAuth**
 3. 浏览器打开授权页后，粘贴「连接 AI」页的访问令牌
-4. 完成
+4. 完成，不需要手动填 Header
 
-**方式 B：客户端支持自定义 Header（Claude 等）**
+### 连接方式 B：自定义 Header（Claude 等）
 
 ```json
 {
@@ -57,51 +99,68 @@
 }
 ```
 
-## 四、本地开发
+---
+
+## 安全模型
+
+| 层 | 机制 |
+|---|---|
+| 路径边界 | `pathsafe.js` 对每个路径做 realpath 校验，只允许白名单根目录内 |
+| 认证 | 全站 Bearer token + OAuth 2.1（PKCE、5 分钟授权码） |
+| 命令管控 | 可关闭执行、60 秒超时、200KB 输出上限、危险模式黑名单 |
+| 数据出口 | 只有 Cloudflare 隧道（cloudflared）和本机 `127.0.0.1:8765` |
+| 令牌 | 首次启动随机生成 24 字节 base64url，可随时轮换 |
+
+⚠️ 公网地址 + 令牌 = 开门。不用时关闭隧道或退出程序。
+
+---
+
+## 目录结构
+
+```
+├─ electron/
+│  ├─ main.js         窗口 / 托盘 / IPC / 生命周期
+│  └─ preload.cjs     contextBridge 窄接口
+├─ src/
+│  ├─ service.js      HTTP 服务器 + cloudflared 隧道管理
+│  ├─ mcp.js          MCP 协议层（JSON-RPC over streamable HTTP）
+│  ├─ oauth.js        OAuth 2.1 授权服务器（动态注册 + PKCE）
+│  ├─ tools.js        10 个工具实现
+│  ├─ pathsafe.js     路径白名单校验
+│  └─ config.js       配置读写（Electron userData）
+├─ ui/                控制面板（原生 HTML/CSS/JS，无框架）
+├─ scripts/
+│  ├─ fetch-cloudflared.cjs   构建前下载 cloudflared
+│  ├─ pack-win.cjs            Windows 打包
+│  └─ pack-mac.sh             macOS 打包
+├─ docs/              用户说明书
+└─ .github/workflows/ 打 tag 自动构建发布
+```
+
+## 本地开发
 
 ```bash
 npm install
-npm start
+npm start          # 需要 Electron 38.2.1
 ```
 
-需要 Electron 38.2.1。启动后本机地址为 `http://127.0.0.1:8765/mcp`。
+本机地址：`http://127.0.0.1:8765/mcp`
 
-## 五、构建安装包
-
-构建产物需要先拉取 cloudflared 二进制：
+## 构建
 
 ```bash
-npm run fetch:cloudflared     # 下载到 resources/
+npm run fetch:cloudflared   # 下载 cloudflared 到 resources/
+npm run pack:win            # Windows（在 Windows 上跑）
+npm run pack:mac            # macOS（在 macOS 上跑）
 ```
 
-Windows（在 Windows 上运行）：
+打 tag `v*` 会触发 GitHub Actions 自动构建三平台安装包并发布到 Release。
 
-```bash
-npm run pack:win              # 产物在 dist/
-```
+## 配置文件
 
-macOS（在 macOS 上运行，得到 .app）：
+- Windows：`%APPDATA%\zhiqiao\config\config.json`
+- macOS：`~/Library/Application Support/zhiqiao/config/config.json`
 
-```bash
-npm run pack:mac              # 产物在 dist/
-```
+## 开源协议
 
-> cloudflared 体积较大（约 68MB），不随仓库分发，构建时自动下载。
-> 未做 Apple 开发者签名，macOS 首次打开需按「系统设置 → 隐私与安全性 → 仍要打开」放行，或执行 `xattr -cr /Applications/智桥-zhiqiao.app`。
-
-## 六、配置文件
-
-- 位置：`%APPDATA%\zhiqiao\config\config.json`（Windows）/ `~/Library/Application Support/zhiqiao/config/config.json`（macOS）
-- 令牌在首次启动时随机生成（`crypto.randomBytes(24).toString('base64url')`）
-- 卸载：删除程序文件夹即可，不写注册表
-
-## 七、安全须知
-
-- 公网地址没有额外保护：**地址 + 令牌** 泄露就等于开门，不用时关闭隧道或退出程序
-- 「允许运行命令」风险最高，内置了危险命令黑名单（`format`、`diskpart`、`rm -rf /` 等）
-- `run_command` 有 60 秒超时和 200KB 输出上限
-- OAuth 授权码 5 分钟过期，令牌可随时重新生成
-
-## 八、开源协议
-
-MIT License，见 [LICENSE](LICENSE)。
+[MIT License](LICENSE) © 2026 zhiqiao
