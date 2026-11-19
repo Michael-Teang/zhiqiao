@@ -49,6 +49,12 @@ document.querySelectorAll('.navitem').forEach((btn) => {
 function renderStatus(s) {
   state = s;
 
+  const mode = s.tunnelMode || 'stable';
+  const modeText = mode === 'stable' ? '固定地址' : (mode === 'named' ? '自有域名' : '临时地址');
+  const badge = $('tunnelModeBadge');
+  badge.textContent = modeText;
+  badge.className = 'tag' + (mode === 'quick' ? ' warn' : '');
+
   // sidebar pill
   const pill = $('sideState');
   if (!s.running) {
@@ -89,11 +95,11 @@ function renderStatus(s) {
     if (s.tunnel.state === 'ready') {
       orb.className = 'orb on';
       title.textContent = '服务运行中，公网可达';
-      sub.textContent = 'AI 现在可以连接了';
+      sub.textContent = mode === 'quick' ? 'AI 现在可以连接了（临时地址）' : 'AI 现在可以连接了，地址会一直保留';
     } else if (s.tunnel.state === 'starting') {
       orb.className = 'orb warn';
-      title.textContent = '服务运行中，正在建立隧道…';
-      sub.textContent = '通常需要 5 到 15 秒';
+      title.textContent = s.publicUrl ? '正在连接固定地址…' : '服务运行中，正在建立隧道…';
+      sub.textContent = s.tunnel.error || '通常需要 5 到 15 秒';
     } else if (s.tunnel.state === 'error') {
       orb.className = 'orb bad';
       title.textContent = '隧道启动失败';
@@ -138,6 +144,18 @@ function renderStatus(s) {
   } else {
     tb.textContent = '开启隧道';
     tb.disabled = false;
+  }
+
+  $('btnRotate').classList.toggle('hidden', mode !== 'stable');
+  $('btnClaim').classList.toggle('hidden', !s.claimUrl);
+
+  const hint = $('tunnelHint');
+  if (mode === 'stable') {
+    hint.textContent = '固定地址会一直保留：重启电脑或程序都不会变，只有点「更换地址」才会换。';
+  } else if (mode === 'named') {
+    hint.textContent = '使用你在 Cloudflare 配置的固定域名，重启电脑或程序都不会变。';
+  } else {
+    hint.textContent = '临时地址每次启动都会变。建议到「权限范围」里切换成固定地址。';
   }
 
   // stats
@@ -205,7 +223,17 @@ function renderConfig(c) {
 
   $('allowExec').checked = !!c.allowExec;
   $('autoTunnel').checked = !!c.autoStartTunnel;
+  $('launchAtLogin').checked = !!c.launchAtLogin;
   $('startMin').checked = !!c.startMinimized;
+
+  const mode = c.tunnelMode || 'stable';
+  $('tunnelMode').value = mode;
+  $('stableModeBox').classList.toggle('hidden', mode !== 'stable');
+  $('namedModeBox').classList.toggle('hidden', mode !== 'named');
+  $('stableUrlView').textContent = c.stableTunnelUrl || '尚未生成';
+  $('namedHostname').value = c.namedTunnelHostname || '';
+  $('namedToken').value = c.namedTunnelToken || '';
+
   $('cfgDir').textContent = c.configDir || '—';
 }
 
@@ -291,6 +319,58 @@ function copyFullConfig() {
 
 $('copyConfig').addEventListener('click', copyFullConfig);
 $('copyConfig2').addEventListener('click', copyFullConfig);
+
+$('btnRotate').addEventListener('click', async () => {
+  if (!state || state.tunnelMode !== 'stable') return;
+  const ok = window.confirm(
+    '更换后公网地址会变成新的，ChatGPT / Claude 里需要重新填一次。\n\n只有你主动确认才会更换，确定继续吗？'
+  );
+  if (!ok) return;
+  const btn = $('btnRotate');
+  btn.disabled = true;
+  try {
+    await window.bridge.rotateTunnel();
+    toast('正在生成新的固定地址，请稍等…', 'warn');
+  } catch (e) {
+    toast('更换失败: ' + e.message, 'bad');
+  } finally {
+    setTimeout(() => { btn.disabled = false; }, 1500);
+  }
+});
+
+$('btnClaim').addEventListener('click', () => {
+  if (state?.claimUrl) window.bridge.openUrl(state.claimUrl);
+});
+
+$('tunnelMode').addEventListener('change', async (e) => {
+  const mode = e.target.value;
+  const labels = { stable: '固定地址', quick: '临时地址', named: '自有 Cloudflare 域名' };
+  await window.bridge.updateConfig({ tunnelMode: mode });
+  toast('已切换为' + (labels[mode] || mode) + '，正在重连…', mode === 'quick' ? 'warn' : 'ok');
+  const [s, c] = await Promise.all([window.bridge.getStatus(), window.bridge.getConfig()]);
+  renderStatus(s);
+  renderConfig(c);
+});
+
+$('saveNamed').addEventListener('click', async () => {
+  const hostname = $('namedHostname').value.trim();
+  const token = $('namedToken').value.trim();
+  if (!hostname || !token) return toast('请填写固定域名和隧道 Token', 'warn');
+  await window.bridge.updateConfig({
+    tunnelMode: 'named',
+    namedTunnelHostname: hostname,
+    namedTunnelToken: token
+  });
+  await window.bridge.restartTunnel();
+  toast('已保存，正在连接固定域名…', 'ok');
+  const s = await window.bridge.getStatus();
+  renderStatus(s);
+});
+
+$('launchAtLogin').addEventListener('change', async (e) => {
+  await window.bridge.updateConfig({ launchAtLogin: e.target.checked });
+  toast(e.target.checked ? '已开启开机自动启动' : '已关闭开机自动启动', 'ok');
+});
 
 $('regenToken').addEventListener('click', async () => {
   const r = await window.bridge.regenerateToken();

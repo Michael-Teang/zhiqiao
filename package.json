@@ -1,7 +1,7 @@
 {
   "name": "zhiqiao",
-  "version": "1.1.0",
-  "description": "智桥-zhiqiao —— 让网页上的 AI 通过 MCP 安全地操作你的电脑",
+  "version": "1.2.0",
+  "description": "智桥-zhiqiao —— 让网页上的 AI 安全地操作你的电脑",
   "main": "electron/main.js",
   "author": "zhiqiao",
   "license": "MIT",

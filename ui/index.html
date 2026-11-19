@@ -63,7 +63,7 @@
     <div class="grid">
       <div class="card">
         <div class="cardHead">
-          <h3>公网地址</h3>
+          <h3>公网地址 <span class="tag" id="tunnelModeBadge">固定地址</span></h3>
           <button class="btn xs" id="btnTunnel">开启隧道</button>
         </div>
         <div class="urlBox" id="publicUrlBox">
@@ -72,8 +72,10 @@
         <div class="row">
           <button class="btn sm" id="copyUrl">复制地址</button>
           <button class="btn sm" id="copyConfig">复制完整配置</button>
+          <button class="btn sm danger hidden" id="btnRotate">更换地址</button>
+          <button class="btn sm hidden" id="btnClaim">注册固定地址</button>
         </div>
-        <p class="hint" id="tunnelHint">开启后得到一个临时公网地址，重启会变。</p>
+        <p class="hint" id="tunnelHint">固定地址会一直保留：重启电脑或程序都不会变，只有点「更换地址」才会换。</p>
       </div>
 
       <div class="card">
@@ -158,6 +160,44 @@
       </p>
     </div>
 
+    <div class="card">
+      <div class="cardHead"><h3>公网地址方式</h3></div>
+      <label class="fieldRow">
+        <span>地址模式</span>
+        <select id="tunnelMode">
+          <option value="stable">固定地址（推荐，免费）</option>
+          <option value="quick">临时地址（cloudflared，重启会变）</option>
+          <option value="named">自有 Cloudflare 域名</option>
+        </select>
+      </label>
+
+      <div id="stableModeBox">
+        <div class="urlBox" style="margin-top:10px"><code id="stableUrlView">尚未生成</code></div>
+        <p class="hint">
+          固定地址和本机的 SSH 密钥绑定，重启电脑、重启程序、断线重连都会回到同一个地址。
+          只有点「更换地址」重新生成密钥时才会改变。
+        </p>
+      </div>
+
+      <div id="namedModeBox" class="hidden">
+        <label class="fieldBlock">
+          <span>固定域名（例如 mcp.example.com）</span>
+          <input type="text" id="namedHostname" placeholder="mcp.example.com" spellcheck="false">
+        </label>
+        <label class="fieldBlock">
+          <span>Cloudflare 隧道 Token</span>
+          <input type="password" id="namedToken" placeholder="eyJhIjoi..." spellcheck="false">
+        </label>
+        <div class="row">
+          <button class="btn sm primary" id="saveNamed">保存并连接</button>
+        </div>
+        <p class="hint">
+          在 Cloudflare Zero Trust → Networks → Tunnels 创建 Named Tunnel，
+          把公共主机名指向本机 127.0.0.1:8765，再粘贴 Token。
+        </p>
+      </div>
+    </div>
+
     <div class="duo">
       <div class="card">
         <div class="cardHead"><h3>执行命令</h3></div>
@@ -175,8 +215,15 @@
         <label class="switchRow">
           <input type="checkbox" id="autoTunnel">
           <span>
-            <b>启动时自动开启隧道</b>
-            <em>打开程序就拿到公网地址，省一步操作。</em>
+            <b>启动时自动连接隧道</b>
+            <em>打开程序就恢复原来的公网地址，不用手动点。</em>
+          </span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="launchAtLogin">
+          <span>
+            <b>开机自动启动</b>
+            <em>重启电脑后自动在托盘运行，固定地址自动恢复。</em>
           </span>
         </label>
         <label class="switchRow">
@@ -209,9 +256,10 @@
     <div class="card">
       <div class="cardHead"><h3>它做什么</h3></div>
       <p class="para">
-        在本机跑一个 MCP 服务，通过 Cloudflare 临时隧道暴露到公网，
-        让网页上的 AI 能读写你指定的文件夹、执行命令。
-        不依赖任何第三方账号，也没有会员限制。
+        在本机跑一个 MCP 服务，通过固定公网地址暴露给网页上的 AI，
+        让 AI 能读写你指定的文件夹、执行命令。
+        固定地址与 SSH 密钥绑定，重启电脑或程序都不会变化，
+        只有你点「更换地址」时才会换。
       </p>
     </div>
 

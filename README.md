@@ -36,7 +36,8 @@ Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
 - **两种连接方式**：OAuth 2.1 授权流程（ChatGPT 要求）和自定义 Header（Claude 等），可同时用
 - **硬边界权限**：AI 只能访问你指定的文件夹，路径穿越（`../`）和符号链接逃逸都会被拦截
 - **命令黑名单**：`format`、`diskpart`、`rm -rf /` 等危险命令默认拒绝
-- **一键公网隧道**：内置 cloudflared，点一下拿到 `*.trycloudflare.com` 临时地址，重启即失效
+- **固定公网地址**：地址与本机 SSH 密钥绑定，重启电脑/程序、断线重连都不变；只有点「更换地址」才会换
+- **多种隧道模式**：固定地址（默认，免费）、cloudflared 临时地址、自有 Cloudflare 域名
 - **令牌可控**：访问令牌随时重新生成，旧连接立即失效
 - **绿色卸载**：不写注册表，删除文件夹即卸载
 
@@ -65,22 +66,24 @@ Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
 
 | 平台 | 安装包 |
 |---|---|
-| Windows 10/11 x64 | `zhiqiao-1.1.0-win64.zip`（绿色版，解压即用） |
-| macOS Apple 芯片 (M1–M4) | `zhiqiao-1.1.0-mac-arm64.zip` |
-| macOS Intel | `zhiqiao-1.1.0-mac-x64.zip` |
+| Windows 10/11 x64 | `zhiqiao-1.2.0-win64.zip`（绿色版，解压即用） |
+| macOS Apple 芯片 (M1–M4) | `zhiqiao-1.2.0-mac-arm64.zip` |
+| macOS Intel | `zhiqiao-1.2.0-mac-x64.zip` |
 
 ### 三步连上 AI
 
-1. 打开智桥-zhiqiao，点「开启隧道」，等 5–15 秒
+1. 打开智桥-zhiqiao，首次启动会自动连接固定地址（约 5–15 秒）
 2. 出现公网地址后点「复制完整配置」
 3. 粘贴到 ChatGPT / Claude 的 MCP 连接器里
+
+固定地址会一直保留：重启电脑、重启程序、断线重连都不会变。
 
 **Windows**：解压后双击 `智桥-zhiqiao.exe`。
 **macOS**：解压后拖进「应用程序」。首次打开被 Gatekeeper 拦截时：系统设置 → 隐私与安全性 → 仍要打开；或终端执行 `xattr -cr /Applications/智桥-zhiqiao.app`。
 
 ### 连接方式 A：OAuth（ChatGPT）
 
-1. URL 填 `https://xxxx.trycloudflare.com/mcp`
+1. URL 填 `https://你的固定地址/mcp`
 2. 身份验证选 **OAuth**
 3. 浏览器打开授权页后，粘贴「连接 AI」页的访问令牌
 4. 完成，不需要手动填 Header

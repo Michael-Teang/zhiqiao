@@ -14,6 +14,7 @@ let win = null;
 let tray = null;
 let bridge = null;
 let quitting = false;
+let startedAtLogin = process.argv.includes('--hidden');
 
 // ---------------------------------------------------------------- helpers
 
@@ -36,6 +37,40 @@ function sendToUi(channel, payload) {
   }
 }
 
+function configView(c) {
+  return {
+    allowedRoots: c.allowedRoots,
+    allowExec: c.allowExec,
+    autoStartTunnel: c.autoStartTunnel,
+    startMinimized: c.startMinimized,
+    launchAtLogin: c.launchAtLogin,
+    tunnelMode: c.tunnelMode,
+    stableTunnelUrl: c.stableTunnelUrl,
+    namedTunnelHostname: c.namedTunnelHostname,
+    namedTunnelToken: c.namedTunnelToken,
+    port: c.port,
+    token: c.token,
+    cloudflaredPath: c.cloudflaredPath,
+    configDir: getConfigDir()
+  };
+}
+
+function applyLoginItem(cfg) {
+  try {
+    if (process.platform === 'win32' || process.platform === 'darwin') {
+      app.setLoginItemSettings({
+        openAtLogin: !!cfg.launchAtLogin,
+        openAsHidden: true,
+        path: process.execPath,
+        args: ['--hidden'],
+        name: 'zhiqiao'
+      });
+    }
+  } catch (e) {
+    console.error('[login] setLoginItemSettings failed:', e.message);
+  }
+}
+
 // ----------------------------------------------------------------- window
 
 function createWindow() {
@@ -48,10 +83,10 @@ function createWindow() {
   const iconPath = resourcePath('icon.png');
   win = new BrowserWindow({
     width: 980,
-    height: 720,
+    height: 760,
     minWidth: 820,
-    minHeight: 600,
-    title: '智桥-zhiqiao',
+    minHeight: 620,
+    title: '智桥-zhiqiao 1.2.0',
     icon: iconPath || undefined,
     backgroundColor: '#0e0e12',
     show: false,
@@ -69,7 +104,7 @@ function createWindow() {
   win.once('ready-to-show', () => {
     let cfg = null;
     try { cfg = getConfig(); } catch (e) {}
-    if (cfg && cfg.startMinimized) return;
+    if (startedAtLogin || (cfg && cfg.startMinimized)) return;
     win.show();
   });
 
@@ -120,9 +155,12 @@ function buildTray() {
       label: '复制公网地址',
       click: () => {
         const s = bridge.status();
-        if (s.publicUrl) {
+        if (s.publicUrl && s.tunnel.state === 'ready') {
           clipboard.writeText(s.publicUrl);
           sendToUi('toast', { kind: 'ok', text: '公网地址已复制' });
+        } else if (s.publicUrl) {
+          clipboard.writeText(s.publicUrl);
+          sendToUi('toast', { kind: 'warn', text: '已复制保存的地址，隧道当前未连接' });
         } else {
           sendToUi('toast', { kind: 'warn', text: '隧道未启动' });
         }
@@ -147,6 +185,28 @@ function buildTray() {
         sendToUi('toast', { kind: 'ok', text: '连接配置已复制' });
       }
     },
+    {
+      label: '更换公网地址',
+      click: async () => {
+        const s = bridge.status();
+        if (s.tunnelMode !== 'stable') {
+          return sendToUi('toast', { kind: 'warn', text: '仅固定地址模式支持更换地址' });
+        }
+        const r = await dialog.showMessageBox({
+          type: 'warning',
+          buttons: ['取消', '更换地址'],
+          defaultId: 0,
+          cancelId: 0,
+          title: '更换公网地址',
+          message: '更换后公网地址会变化，ChatGPT / Claude 里需要重新填一次。',
+          detail: '只有你主动确认才会更换。'
+        });
+        if (r.response === 1) {
+          bridge.rotateStableTunnel();
+          sendToUi('toast', { kind: 'warn', text: '正在生成新的固定地址…' });
+        }
+      }
+    },
     { type: 'separator' },
     {
       label: '退出',
@@ -165,39 +225,32 @@ function registerIpc() {
   ipcMain.handle('status', () => bridge.status());
   ipcMain.handle('tools', () => toolCatalog());
 
-  ipcMain.handle('config:get', () => {
-    const c = getConfig();
-    return {
-      allowedRoots: c.allowedRoots,
-      allowExec: c.allowExec,
-      autoStartTunnel: c.autoStartTunnel,
-      startMinimized: c.startMinimized,
-      port: c.port,
-      token: c.token,
-      cloudflaredPath: c.cloudflaredPath,
-      configDir: getConfigDir()
-    };
-  });
+  ipcMain.handle('config:get', () => configView(getConfig()));
 
   ipcMain.handle('config:update', (e, patch) => {
+    const before = getConfig();
     const next = updateConfig(patch);
+
+    if (Object.prototype.hasOwnProperty.call(patch || {}, 'launchAtLogin')) {
+      applyLoginItem(next);
+    }
+
+    const modeChanged = patch && patch.tunnelMode && patch.tunnelMode !== before.tunnelMode;
+    if (modeChanged) {
+      bridge.stopTunnel();
+      if (next.autoStartTunnel) setTimeout(() => bridge.startTunnel(), 120);
+    }
+
     sendToUi('status', bridge.status());
-    return {
-      allowedRoots: next.allowedRoots,
-      allowExec: next.allowExec,
-      autoStartTunnel: next.autoStartTunnel,
-      startMinimized: next.startMinimized,
-      port: next.port,
-      token: next.token,
-      cloudflaredPath: next.cloudflaredPath,
-      configDir: getConfigDir()
-    };
+    return configView(next);
   });
 
   ipcMain.handle('service:start', async () => { await bridge.start(); return bridge.status(); });
   ipcMain.handle('service:stop', async () => { await bridge.stop(); return bridge.status(); });
   ipcMain.handle('tunnel:start', () => { bridge.startTunnel(); return bridge.status(); });
   ipcMain.handle('tunnel:stop', () => { bridge.stopTunnel(); return bridge.status(); });
+  ipcMain.handle('tunnel:rotate', () => bridge.rotateStableTunnel());
+  ipcMain.handle('tunnel:restart', () => bridge.restartTunnel());
 
   ipcMain.handle('token:regenerate', () => {
     const next = updateConfig({ token: crypto.randomBytes(24).toString('base64url') });
@@ -248,7 +301,11 @@ if (!gotLock) {
     // dark window chrome so the title bar matches the panel
     nativeTheme.themeSource = 'dark';
     initConfigDir(app.getPath('userData'));
-    loadConfig();
+    const cfg = loadConfig();
+    applyLoginItem(cfg);
+    try {
+      if (app.getLoginItemSettings().wasOpenedAtLogin) startedAtLogin = true;
+    } catch (e) {}
 
     bridge = new Bridge({ cloudflaredPath: resourcePath('cloudflared.exe') || '' });
     bridge.on('status', (s) => sendToUi('status', s));

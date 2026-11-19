@@ -16,6 +16,8 @@ const api = {
   stopService: () => ipcRenderer.invoke('service:stop'),
   startTunnel: () => ipcRenderer.invoke('tunnel:start'),
   stopTunnel: () => ipcRenderer.invoke('tunnel:stop'),
+  rotateTunnel: () => ipcRenderer.invoke('tunnel:rotate'),
+  restartTunnel: () => ipcRenderer.invoke('tunnel:restart'),
 
   // token
   regenerateToken: () => ipcRenderer.invoke('token:regenerate'),

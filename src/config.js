@@ -19,6 +19,10 @@ function getConfigDir() {
   return cfgDir;
 }
 
+function getStableKeyDir() {
+  return path.join(path.dirname(cfgDir), 'ssh');
+}
+
 function defaultRoots() {
   const home = os.homedir();
   const out = [];
@@ -31,13 +35,20 @@ function defaultRoots() {
 }
 
 const DEFAULTS = {
+  configVersion: 2,
   port: 8765,
   host: '127.0.0.1',
   token: '',
   allowedRoots: [],
   allowExec: true,
-  autoStartTunnel: false,
+  autoStartTunnel: true,
   startMinimized: false,
+  launchAtLogin: true,
+  tunnelMode: 'stable',
+  stableTunnelUrl: '',
+  stableTunnelHost: 'proxy.tunnl.gg',
+  namedTunnelHostname: '',
+  namedTunnelToken: '',
   execDeniedPatterns: [
     'format ', 'diskpart', 'bcdedit', 'cipher /w',
     'rm -rf /', 'mkfs', 'dd if=', 'shutdown', 'Restart-Computer',
@@ -67,6 +78,17 @@ function loadConfig() {
   }
 
   const cfg = Object.assign({}, DEFAULTS, fileCfg);
+  let dirty = false;
+
+  // v1 -> v2: switch from volatile quick tunnels to a key-bound stable address,
+  // and make the app reconnect that same address at login.
+  if (Number(fileCfg.configVersion || 1) < 2) {
+    cfg.configVersion = 2;
+    cfg.tunnelMode = 'stable';
+    cfg.autoStartTunnel = true;
+    cfg.launchAtLogin = true;
+    dirty = true;
+  }
 
   if (!Array.isArray(cfg.allowedRoots) || !cfg.allowedRoots.length) {
     cfg.allowedRoots = defaultRoots();
@@ -78,8 +100,10 @@ function loadConfig() {
 
   if (!cfg.token) {
     cfg.token = crypto.randomBytes(24).toString('base64url');
-    saveConfig(cfg);
+    dirty = true;
   }
+
+  if (dirty) saveConfig(cfg);
 
   cached = cfg;
   return cfg;
@@ -103,6 +127,7 @@ function updateConfig(patch) {
 module.exports = {
   initConfigDir,
   getConfigDir,
+  getStableKeyDir,
   loadConfig,
   getConfig,
   saveConfig,

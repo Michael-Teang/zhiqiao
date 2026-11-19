@@ -338,6 +338,66 @@ button, input { font: inherit; color: inherit; }
 .btn.xs { font-size: 11px; padding: 5px 10px; }
 .btn.sm { font-size: 12px; padding: 6px 11px; }
 
+.hidden { display: none !important; }
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--line2);
+  background: #0a0a0e;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+.tag.warn { color: var(--warn); border-color: #3a3320; }
+.tag.bad { color: var(--bad); border-color: #3a2626; }
+
+.fieldRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 4px 0;
+  min-width: 0;
+}
+.fieldRow > span { font-size: 13px; color: var(--text); font-weight: 500; }
+.fieldRow select {
+  min-width: min(300px, 52%);
+  background: #0a0a0e;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.fieldBlock {
+  display: block;
+  margin-top: 11px;
+  min-width: 0;
+}
+.fieldBlock > span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.fieldBlock input {
+  width: 100%;
+  background: #0a0a0e;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  padding: 9px 12px;
+  color: var(--text);
+  font: 12.5px ui-monospace, Consolas, monospace;
+}
+.fieldBlock input:focus { outline: none; border-color: var(--accent); }
+
 .row {
   display: flex;
   gap: 8px;
