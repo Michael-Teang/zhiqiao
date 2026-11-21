@@ -21,6 +21,12 @@
     <button class="navitem active" data-page="home">
       <span class="dot"></span> 概览
     </button>
+    <button class="navitem" data-page="connections">
+      <span class="dot"></span> 连接记录 <span class="navBadge" id="connBadge">0</span>
+    </button>
+    <button class="navitem" data-page="memory">
+      <span class="dot"></span> 记忆库 <span class="navBadge" id="memoryBadge">0</span>
+    </button>
     <button class="navitem" data-page="connect">
       <span class="dot"></span> 连接 AI
     </button>
@@ -60,6 +66,14 @@
       </div>
     </div>
 
+    <div class="alertCard hidden" id="pendingBanner">
+      <div>
+        <b>有设备请求连接</b>
+        <span id="pendingBannerText">请到「连接记录」里批准或拒绝。</span>
+      </div>
+      <button class="btn sm primary" id="goConnections">去处理</button>
+    </div>
+
     <div class="grid">
       <div class="card">
         <div class="cardHead">
@@ -68,6 +82,17 @@
         </div>
         <div class="urlBox" id="publicUrlBox">
           <code id="publicUrl">隧道未开启</code>
+        </div>
+        <label class="fieldBlock" style="margin-top:10px">
+          <span>已保存的公网地址</span>
+          <select id="publicUrlSelect" class="urlSelect">
+            <option value="">尚无地址</option>
+          </select>
+        </label>
+        <div class="row hidden" id="fallbackRow" style="align-items:center">
+          <span class="tag warn">临时加速</span>
+          <code id="fallbackUrl" style="color:var(--warn);font:12px ui-monospace,Consolas,monospace"></code>
+          <button class="btn sm" id="copyFallback">复制</button>
         </div>
         <div class="row">
           <button class="btn sm" id="copyUrl">复制地址</button>
@@ -103,6 +128,63 @@
       <div class="activity" id="activityList">
         <div class="empty">还没有调用记录</div>
       </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------ 连接记录 -->
+  <section class="page hidden" id="page-connections">
+    <header class="ph">
+      <h1>连接记录</h1>
+      <p>哪些设备连接过这台电脑。新设备需要你在这里批准，3 分钟内不处理就会过期。</p>
+    </header>
+
+    <div class="card hidden" id="pendingBox">
+      <div class="cardHead">
+        <h3>待批准连接</h3>
+        <span class="tag warn" id="pendingCountTag">0 个</span>
+      </div>
+      <div class="connList" id="pendingList"></div>
+      <p class="hint">请求只在 3 分钟内有效；超时后对方必须重新发起连接。</p>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <h3>设备记录</h3>
+        <div class="row" style="margin-top:0">
+          <button class="btn xs" id="refreshConnections">刷新</button>
+          <button class="btn xs danger" id="clearConnections">清空记录</button>
+        </div>
+      </div>
+      <div class="connList" id="connectionList">
+        <div class="empty">还没有连接记录</div>
+      </div>
+      <p class="hint">公网地址或固定地址密钥更换后，记录会自动刷新重建。</p>
+    </div>
+  </section>
+
+  <!-- --------------------------------------------------------- 记忆库 -->
+  <section class="page hidden" id="page-memory">
+    <header class="ph">
+      <h1>记忆库</h1>
+      <p>AI 完成任务后可以把上下文摘要保存在这里，下一个 AI 通过 memory_search 读取，不必从头再来。</p>
+    </header>
+
+    <div class="card">
+      <div class="cardHead">
+        <h3>保存的记忆</h3>
+        <div class="row" style="margin-top:0">
+          <button class="btn xs" id="refreshMemories">刷新</button>
+          <button class="btn xs danger" id="clearMemories">清空</button>
+        </div>
+      </div>
+      <div class="row" style="margin-top:0">
+        <input type="search" id="memorySearch" class="textInput" placeholder="按关键词搜索标题、摘要、内容或标签…">
+        <button class="btn sm" id="btnMemorySearch">搜索</button>
+      </div>
+      <div class="memoryList" id="memoryList">
+        <div class="empty">还没有保存的记忆</div>
+      </div>
+      <p class="hint" id="memoryStats">—</p>
     </div>
   </section>
 
@@ -200,12 +282,26 @@
 
     <div class="duo">
       <div class="card">
-        <div class="cardHead"><h3>执行命令</h3></div>
+        <div class="cardHead"><h3>执行命令与桌面</h3></div>
         <label class="switchRow">
           <input type="checkbox" id="allowExec">
           <span>
             <b>允许运行 shell 命令</b>
             <em>关闭后 AI 只能读写文件，不能执行程序。建议先用这个状态。</em>
+          </span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="allowDesktopTools">
+          <span>
+            <b>允许桌面工具</b>
+            <em>允许 AI 截屏、读写剪贴板。涉及屏幕内容，按需开启。</em>
+          </span>
+        </label>
+        <label class="switchRow">
+          <input type="checkbox" id="autoMemory">
+          <span>
+            <b>自动记录会话记忆</b>
+            <em>会话空闲 60 秒后，自动把本轮工具调用摘要写入记忆库；不保存完整聊天原文。</em>
           </span>
         </label>
       </div>
@@ -243,7 +339,7 @@
       <h1>可用工具</h1>
       <p>AI 能调用的全部能力。</p>
     </header>
-    <div class="tools" id="toolList"></div>
+    <div class="toolGroups" id="toolList"></div>
   </section>
 
   <!-- ------------------------------------------------------------ 关于 -->

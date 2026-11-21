@@ -35,7 +35,7 @@ function defaultRoots() {
 }
 
 const DEFAULTS = {
-  configVersion: 2,
+  configVersion: 3,
   port: 8765,
   host: '127.0.0.1',
   token: '',
@@ -44,6 +44,12 @@ const DEFAULTS = {
   autoStartTunnel: true,
   startMinimized: false,
   launchAtLogin: true,
+  approvalTimeoutMs: 180000,
+  addressHistory: [],
+  memoryEnabled: true,
+  autoMemory: true,
+  autoMemoryIdleMs: 60000,
+  allowDesktopTools: true,
   tunnelMode: 'stable',
   stableTunnelUrl: '',
   stableTunnelHost: 'proxy.tunnl.gg',
@@ -87,6 +93,42 @@ function loadConfig() {
     cfg.tunnelMode = 'stable';
     cfg.autoStartTunnel = true;
     cfg.launchAtLogin = true;
+    dirty = true;
+  }
+
+  // v2 -> v3: connection approval, memory library and address history.
+  if (Number(cfg.configVersion || 2) < 3) {
+    cfg.configVersion = 3;
+    if (!Array.isArray(cfg.addressHistory)) cfg.addressHistory = [];
+    if (!Number(cfg.approvalTimeoutMs) || cfg.approvalTimeoutMs < 30000) cfg.approvalTimeoutMs = 180000;
+    if (typeof cfg.memoryEnabled !== 'boolean') cfg.memoryEnabled = true;
+    if (typeof cfg.allowDesktopTools !== 'boolean') cfg.allowDesktopTools = true;
+    dirty = true;
+  }
+
+  if (!Array.isArray(cfg.addressHistory)) cfg.addressHistory = [];
+  cfg.addressHistory = cfg.addressHistory
+    .filter((x) => x && typeof x.url === 'string' && /^https?:\/\//i.test(x.url))
+    .map((x) => ({
+      url: String(x.url).replace(/\/+$/, ''),
+      mode: x.mode === 'quick' ? 'quick' : (x.mode === 'named' ? 'named' : 'stable'),
+      label: typeof x.label === 'string' ? x.label.slice(0, 80) : '',
+      createdAt: Number(x.createdAt) || Date.now(),
+      lastSeenAt: Number(x.lastSeenAt) || Number(x.createdAt) || Date.now()
+    }))
+    .filter((x, i, a) => a.findIndex((y) => y.url === x.url) === i);
+  let _quickSeen = 0;
+  cfg.addressHistory = cfg.addressHistory.filter((x) => x.mode !== 'quick' || _quickSeen++ < 3).slice(0, 30);
+
+  if (cfg.stableTunnelUrl && !cfg.addressHistory.some((x) => x.url === cfg.stableTunnelUrl)) {
+    cfg.addressHistory.unshift({
+      url: cfg.stableTunnelUrl,
+      mode: 'stable',
+      label: '固定地址',
+      createdAt: Date.now(),
+      lastSeenAt: Date.now()
+    });
+    cfg.addressHistory = cfg.addressHistory.slice(0, 30);
     dirty = true;
   }
 

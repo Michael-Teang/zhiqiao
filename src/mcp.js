@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const { toolCatalog, toolIndex } = require('./tools.js');
 
 const PROTOCOL_DEFAULT = '2024-11-05';
-const SERVER_INFO = { name: 'zhiqiao', version: '1.0.0' };
+const SERVER_INFO = { name: 'zhiqiao', version: '1.3.0' };
 
 const sessions = new Map();
 
@@ -34,8 +34,8 @@ async function handleMessage(msg, ctx) {
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
         instructions:
-          'This bridge lets you read and write files and run shell commands on the ' +
-          "user's computer. All paths must stay inside: " + ctx.allowedRoots.join(', ')
+          "This bridge lets you read and write files, run shell commands, inspect processes, capture the screen and keep persistent handoff memories on the user's computer. All file paths must stay inside: " + ctx.allowedRoots.join(', ') +
+          '. At the start of a task call memory_search to recover context from previous AIs. After every user request, before giving your final answer, call memory_save with a concise handoff record (what the user asked, what you did, key paths/decisions, next steps); do this even for small tasks, keep it 3-8 lines. The bridge also auto-archives tool activity after 60 seconds of inactivity, but that archive does not contain your natural-language answer — your memory_save is the authoritative handoff for the next AI.'
       });
     }
 
@@ -52,9 +52,13 @@ async function handleMessage(msg, ctx) {
       if (!t) return jsonrpcError(id, -32602, 'unknown tool: ' + name);
 
       try {
-        const text = await t.handler(args);
+        const result = await t.handler(args, ctx);
+        if (result && result.__mcpContent && Array.isArray(result.__mcpContent)) {
+          return ok(id, { content: result.__mcpContent, isError: false });
+        }
+        const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
         return ok(id, {
-          content: [{ type: 'text', text: typeof text === 'string' ? text : JSON.stringify(text, null, 2) }],
+          content: [{ type: 'text', text: text }],
           isError: false
         });
       } catch (e) {

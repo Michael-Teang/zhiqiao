@@ -5,15 +5,45 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const dns = require('node:dns');
+const { spawn, spawnSync } = require('node:child_process');
 const { getConfig } = require('./config.js');
 const { assertAllowed, clip } = require('./pathsafe.js');
 
 const TOOLS = [];
+let memoryStore = null;
 
-function tool(name, description, inputSchema, handler) {
-  TOOLS.push({ name, description, inputSchema, handler });
+function tool(name, description, inputSchema, handler, category) {
+  TOOLS.push({ name, description, inputSchema, handler, category: category || '基础' });
 }
+
+function setMemoryStore(store) {
+  memoryStore = store;
+}
+
+function isWin() {
+  return process.platform === 'win32';
+}
+
+function runSync(file, args, opts) {
+  const r = spawnSync(file, args, Object.assign({
+    windowsHide: true,
+    encoding: 'utf8',
+    maxBuffer: 12 * 1024 * 1024,
+    timeout: 30000
+  }, opts || {}));
+  if (r.error) throw new Error(r.error.message);
+  if (r.status !== 0) throw new Error(String(r.stderr || r.stdout || 'command failed').trim());
+  return String(r.stdout || '');
+}
+
+function requireMemory() {
+  if (!getConfig().memoryEnabled) throw new Error('memory is disabled in settings');
+  if (!memoryStore) throw new Error('memory store is not initialized');
+  return memoryStore;
+}
+
 
 // ---------------------------------------------------------------- filesystem
 
@@ -312,6 +342,342 @@ tool(
   }
 );
 
+// -------------------------------------------------------------- file pack
+
+tool(
+  'hash_file',
+  'Compute a cryptographic hash for a file inside the allowed roots.',
+  {
+    type: 'object',
+    properties: {
+      path: { type: 'string' },
+      algorithm: { type: 'string', description: 'sha256 (default), sha1, sha512 or md5.' }
+    },
+    required: ['path']
+  },
+  async (a) => {
+    const abs = assertAllowed(a.path, { mustExist: true });
+    const algo = String(a.algorithm || 'sha256').toLowerCase();
+    if (!['sha256', 'sha1', 'sha512', 'md5'].includes(algo)) throw new Error('unsupported algorithm');
+    const st = await fsp.stat(abs);
+    if (st.isDirectory()) throw new Error('that path is a directory');
+    const h = crypto.createHash(algo);
+    await new Promise((resolve, reject) => {
+      const s = fs.createReadStream(abs);
+      s.on('data', (d) => h.update(d));
+      s.on('end', resolve);
+      s.on('error', reject);
+    });
+    return JSON.stringify({ path: abs, size: st.size, algorithm: algo, hash: h.digest('hex') }, null, 2);
+  },
+  '文件增强'
+);
+
+tool(
+  'find_files',
+  'Find files by name (supports * wildcards) inside an allowed directory.',
+  {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Directory to search.' },
+      pattern: { type: 'string', description: 'Name pattern, e.g. "*.log" or "report".' },
+      limit: { type: 'number', description: 'Max results (default 100).' }
+    },
+    required: ['path', 'pattern']
+  },
+  async (a) => {
+    const root = assertAllowed(a.path, { mustExist: true });
+    const pat = String(a.pattern || '*');
+    const re = new RegExp('^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+    const cap = Math.min(Math.max(Number(a.limit) || 100, 1), 500);
+    const hits = [];
+    const walk = async (dir, depth) => {
+      if (hits.length >= cap || depth > 8) return;
+      let items;
+      try { items = await fsp.readdir(dir, { withFileTypes: true }); } catch (e) { return; }
+      for (const it of items) {
+        if (hits.length >= cap) return;
+        if (it.name === 'node_modules' || it.name === '.git') continue;
+        const full = path.join(dir, it.name);
+        if (it.isDirectory()) { await walk(full, depth + 1); continue; }
+        if (re.test(it.name)) hits.push(path.relative(root, full));
+      }
+    };
+    await walk(root, 0);
+    return hits.length ? hits.join('\n') : 'no matches';
+  },
+  '文件增强'
+);
+
+// ------------------------------------------------------------- system pack
+
+tool(
+  'list_processes',
+  'List running processes with PID, name, CPU, memory and window title.',
+  {
+    type: 'object',
+    properties: { limit: { type: 'number', description: 'Max rows (default 60).' } }
+  },
+  async (a) => {
+    const limit = Math.min(Math.max(Number(a.limit) || 60, 1), 200);
+    if (isWin()) {
+      const script = `Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First ${limit} Id,ProcessName,CPU,WorkingSet64,MainWindowTitle | ConvertTo-Json -Compress`;
+      return clip(runSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]));
+    }
+    return clip(runSync('ps', ['-axo', 'pid,comm,%cpu,rss,args']));
+  },
+  '系统运维'
+);
+
+tool(
+  'kill_process',
+  'Terminate a process by PID. Respects the command-execution switch.',
+  {
+    type: 'object',
+    properties: {
+      pid: { type: 'number' },
+      signal: { type: 'string', description: 'SIGTERM (default) or SIGKILL.' }
+    },
+    required: ['pid']
+  },
+  async (a) => {
+    if (!getConfig().allowExec) throw new Error('command execution is disabled (allowExec=false)');
+    const pid = Number(a.pid);
+    if (!Number.isInteger(pid) || pid <= 0) throw new Error('invalid pid');
+    if (pid === process.pid) throw new Error('refusing to kill the bridge process itself');
+    process.kill(pid, String(a.signal || 'SIGTERM').toUpperCase());
+    return 'sent ' + String(a.signal || 'SIGTERM').toUpperCase() + ' to pid ' + pid;
+  },
+  '系统运维'
+);
+
+tool(
+  'network_info',
+  'Show hostname, local network interfaces and DNS servers.',
+  { type: 'object', properties: {} },
+  async () => {
+    const interfaces = {};
+    const nets = os.networkInterfaces();
+    for (const [name, list] of Object.entries(nets)) {
+      interfaces[name] = (list || []).map((x) => ({
+        address: x.address,
+        family: x.family,
+        internal: x.internal,
+        mac: x.mac
+      }));
+    }
+    return JSON.stringify({
+      hostname: os.hostname(),
+      platform: process.platform,
+      interfaces,
+      dnsServers: dns.getServers()
+    }, null, 2);
+  },
+  '系统运维'
+);
+
+tool(
+  'disk_usage',
+  'Show used/free space for the allowed folders.',
+  { type: 'object', properties: {} },
+  async () => {
+    const rows = [];
+    for (const root of getConfig().allowedRoots.slice(0, 8)) {
+      try {
+        const st = await fsp.statfs(root);
+        const block = Number(st.bsize) || 0;
+        const total = Number(st.blocks) * block;
+        const free = Number(st.bavail) * block;
+        rows.push({ path: root, totalBytes: total, freeBytes: free, usedBytes: total - free });
+      } catch (e) {
+        rows.push({ path: root, error: e.message });
+      }
+    }
+    return JSON.stringify(rows, null, 2);
+  },
+  '系统运维'
+);
+
+// ------------------------------------------------------------ desktop pack
+
+tool(
+  'clipboard_get',
+  'Read the current system clipboard text.',
+  { type: 'object', properties: {} },
+  async () => {
+    if (!getConfig().allowDesktopTools) throw new Error('desktop tools are disabled');
+    if (isWin()) return clip(runSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw']));
+    if (process.platform === 'darwin') return clip(runSync('pbpaste', []));
+    return clip(runSync('sh', ['-c', 'xclip -selection clipboard -o 2>/dev/null || xsel --clipboard --output 2>/dev/null || true']));
+  },
+  '桌面辅助'
+);
+
+tool(
+  'clipboard_set',
+  'Replace the system clipboard text.',
+  { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  async (a) => {
+    if (!getConfig().allowDesktopTools) throw new Error('desktop tools are disabled');
+    const text = String(a.text || '').slice(0, 100000);
+    if (isWin()) {
+      runSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::In.ReadToEnd() | Set-Clipboard'], { input: text });
+    } else if (process.platform === 'darwin') {
+      runSync('pbcopy', [], { input: text });
+    } else {
+      runSync('sh', ['-c', 'xclip -selection clipboard 2>/dev/null || xsel --clipboard --input 2>/dev/null || true'], { input: text });
+    }
+    return 'clipboard updated (' + text.length + ' chars)';
+  },
+  '桌面辅助'
+);
+
+tool(
+  'screenshot',
+  'Capture the whole screen and return it as an image to the AI.',
+  {
+    type: 'object',
+    properties: { saveTo: { type: 'string', description: 'Optional path inside allowed roots.' } }
+  },
+  async (a) => {
+    if (!getConfig().allowDesktopTools) throw new Error('desktop tools are disabled');
+    if (!getConfig().allowExec) throw new Error('command execution is disabled (allowExec=false)');
+    const roots = getConfig().allowedRoots;
+    const dir = a.saveTo ? assertAllowed(a.saveTo) : path.join(roots[0] || os.tmpdir(), '.zhiqiao-screenshots');
+    await fsp.mkdir(dir, { recursive: true });
+    const out = path.join(dir, 'screenshot-' + new Date().toISOString().replace(/[:.]/g, '-') + '.png');
+    if (isWin()) {
+      const psOut = out.replace(/'/g, "''");
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms,System.Drawing',
+        '$r=[System.Windows.Forms.SystemInformation]::VirtualScreen',
+        '$b=New-Object System.Drawing.Bitmap $r.Width,$r.Height',
+        '$g=[System.Drawing.Graphics]::FromImage($b)',
+        '$g.CopyFromScreen($r.Left,$r.Top,0,0,$b.Size)',
+        "$b.Save('" + psOut + "',[System.Drawing.Imaging.ImageFormat]::Png)",
+        '$g.Dispose();$b.Dispose()',
+        "Write-Output '" + psOut + "'"
+      ].join('; ');
+      runSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30000 });
+    } else if (process.platform === 'darwin') {
+      runSync('screencapture', ['-x', out], { timeout: 30000 });
+    } else {
+      runSync('sh', ['-c', 'gnome-screenshot -f "$1" 2>/dev/null || import -window root "$1" 2>/dev/null || true', '--', out], { timeout: 30000 });
+    }
+    const st = await fsp.stat(out);
+    if (st.size > 3 * 1024 * 1024) return 'screenshot saved to ' + out + ' (' + st.size + ' bytes, too large to inline)';
+    const b64 = (await fsp.readFile(out)).toString('base64');
+    return {
+      __mcpContent: [
+        { type: 'text', text: 'screenshot saved to ' + out + ' (' + st.size + ' bytes)' },
+        { type: 'image', data: b64, mimeType: 'image/png' }
+      ]
+    };
+  },
+  '桌面辅助'
+);
+
+// --------------------------------------------------------------- memory pack
+
+tool(
+  'memory_save',
+  'Save a concise handoff memory after each user request and before your final answer: what the user asked, what was done, key facts, paths, decisions and next steps. The next AI can read it with memory_search.',
+  {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      summary: { type: 'string' },
+      content: { type: 'string', description: 'Full notes. Markdown is fine.' },
+      tags: { type: 'array', items: { type: 'string' } },
+      id: { type: 'string', description: 'Optional existing memory id to update.' }
+    },
+    required: ['title', 'content']
+  },
+  async (a, ctx) => {
+    const rec = requireMemory().save({
+      id: a.id,
+      title: a.title,
+      summary: a.summary,
+      content: a.content,
+      tags: a.tags,
+      source: {
+        clientName: ctx && ctx.clientName,
+        ip: ctx && ctx.clientIp,
+        sessionId: ctx && ctx.sessionId
+      }
+    });
+    return 'memory saved: ' + rec.id + '\n' + rec.title;
+  },
+  '记忆'
+);
+
+tool(
+  'memory_search',
+  'Search saved handoff memories. Use this at the start of a task to recover context from previous AIs.',
+  {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Keyword; empty returns newest memories.' },
+      limit: { type: 'number' }
+    }
+  },
+  async (a) => {
+    const rows = requireMemory().list(a.query, a.limit || 10);
+    if (!rows.length) return 'no memories found';
+    return rows.map((r) => [
+      '[' + r.id + '] ' + r.title,
+      'tags: ' + (r.tags.join(', ') || '-'),
+      'updated: ' + new Date(r.updatedAt).toISOString(),
+      'source: ' + (r.source.clientName || 'unknown'),
+      'summary: ' + (r.summary || '')
+    ].join('\n')).join('\n\n');
+  },
+  '记忆'
+);
+
+tool(
+  'memory_get',
+  'Read one saved memory in full by id.',
+  { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  async (a) => {
+    const rec = requireMemory().get(a.id);
+    if (!rec) throw new Error('memory not found: ' + a.id);
+    return JSON.stringify(rec, null, 2);
+  },
+  '记忆'
+);
+
+tool(
+  'memory_list',
+  'List recent saved memories (summary only).',
+  { type: 'object', properties: { limit: { type: 'number' } } },
+  async (a) => {
+    const rows = requireMemory().list('', a.limit || 20);
+    if (!rows.length) return 'no memories';
+    return rows.map((r) => '[' + r.id + '] ' + r.title + ' — ' + (r.summary || '')).join('\n');
+  },
+  '记忆'
+);
+
+tool(
+  'memory_delete',
+  'Delete one saved memory by id.',
+  { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  async (a) => {
+    const ok = requireMemory().remove(a.id);
+    return ok ? 'deleted ' + a.id : 'memory not found: ' + a.id;
+  },
+  '记忆'
+);
+
+tool(
+  'memory_stats',
+  'Show how many memories are stored and where.',
+  { type: 'object', properties: {} },
+  async () => JSON.stringify(requireMemory().stats(), null, 2),
+  '记忆'
+);
+
 function toolIndex() {
   return new Map(TOOLS.map((t) => [t.name, t]));
 }
@@ -320,8 +686,9 @@ function toolCatalog() {
   return TOOLS.map((t) => ({
     name: t.name,
     description: t.description,
-    inputSchema: t.inputSchema
+    inputSchema: t.inputSchema,
+    category: t.category || '基础'
   }));
 }
 
-module.exports = { tools: TOOLS, toolIndex, toolCatalog };
+module.exports = { tools: TOOLS, toolIndex, toolCatalog, setMemoryStore };

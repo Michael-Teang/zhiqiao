@@ -18,6 +18,23 @@ const api = {
   stopTunnel: () => ipcRenderer.invoke('tunnel:stop'),
   rotateTunnel: () => ipcRenderer.invoke('tunnel:rotate'),
   restartTunnel: () => ipcRenderer.invoke('tunnel:restart'),
+  getClaimLink: () => ipcRenderer.invoke('tunnel:claim'),
+
+  // connection approval / history
+  listConnections: () => ipcRenderer.invoke('connections:list'),
+  pendingConnections: () => ipcRenderer.invoke('connections:pending'),
+  approveConnection: (id) => ipcRenderer.invoke('connections:approve', id),
+  denyConnection: (id) => ipcRenderer.invoke('connections:deny', id),
+  blockConnection: (id) => ipcRenderer.invoke('connections:block', id),
+  unblockConnection: (id) => ipcRenderer.invoke('connections:unblock', id),
+  clearConnections: () => ipcRenderer.invoke('connections:clear'),
+
+  // memory library
+  listMemories: (query, limit) => ipcRenderer.invoke('memory:list', query, limit),
+  getMemory: (id) => ipcRenderer.invoke('memory:get', id),
+  deleteMemory: (id) => ipcRenderer.invoke('memory:delete', id),
+  clearMemories: () => ipcRenderer.invoke('memory:clear'),
+  memoryStats: () => ipcRenderer.invoke('memory:stats'),
 
   // token
   regenerateToken: () => ipcRenderer.invoke('token:regenerate'),
@@ -46,6 +63,16 @@ const api = {
     const h = (_e, a) => cb(a);
     ipcRenderer.on('activity', h);
     return () => ipcRenderer.removeListener('activity', h);
+  },
+  onConnection: (cb) => {
+    const h = (_e, p) => cb(p);
+    ipcRenderer.on('connection', h);
+    return () => ipcRenderer.removeListener('connection', h);
+  },
+  onMemory: (cb) => {
+    const h = (_e, list) => cb(list);
+    ipcRenderer.on('memory', h);
+    return () => ipcRenderer.removeListener('memory', h);
   }
 };
 

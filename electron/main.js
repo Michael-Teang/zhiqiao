@@ -44,6 +44,12 @@ function configView(c) {
     autoStartTunnel: c.autoStartTunnel,
     startMinimized: c.startMinimized,
     launchAtLogin: c.launchAtLogin,
+    approvalTimeoutMs: c.approvalTimeoutMs,
+    addressHistory: c.addressHistory || [],
+    memoryEnabled: c.memoryEnabled,
+    autoMemory: c.autoMemory,
+    autoMemoryIdleMs: c.autoMemoryIdleMs,
+    allowDesktopTools: c.allowDesktopTools,
     tunnelMode: c.tunnelMode,
     stableTunnelUrl: c.stableTunnelUrl,
     namedTunnelHostname: c.namedTunnelHostname,
@@ -86,7 +92,7 @@ function createWindow() {
     height: 760,
     minWidth: 820,
     minHeight: 620,
-    title: '智桥-zhiqiao 1.2.0',
+    title: '智桥-zhiqiao 1.3.0',
     icon: iconPath || undefined,
     backgroundColor: '#0e0e12',
     show: false,
@@ -155,12 +161,10 @@ function buildTray() {
       label: '复制公网地址',
       click: () => {
         const s = bridge.status();
-        if (s.publicUrl && s.tunnel.state === 'ready') {
-          clipboard.writeText(s.publicUrl);
+        const url = (s.tunnel && s.tunnel.state === 'ready') ? s.publicUrl : (s.fallbackUrl || s.publicUrl);
+        if (url) {
+          clipboard.writeText(url);
           sendToUi('toast', { kind: 'ok', text: '公网地址已复制' });
-        } else if (s.publicUrl) {
-          clipboard.writeText(s.publicUrl);
-          sendToUi('toast', { kind: 'warn', text: '已复制保存的地址，隧道当前未连接' });
         } else {
           sendToUi('toast', { kind: 'warn', text: '隧道未启动' });
         }
@@ -199,7 +203,7 @@ function buildTray() {
           cancelId: 0,
           title: '更换公网地址',
           message: '更换后公网地址会变化，ChatGPT / Claude 里需要重新填一次。',
-          detail: '只有你主动确认才会更换。'
+          detail: '更换会生成新的 SSH 密钥。生成后必须立即点击「注册固定地址」，把新密钥绑定到 tunnl.gg 免费账号，否则固定地址会一直显示「正在获取地址」。只有你主动确认才会更换。'
         });
         if (r.response === 1) {
           bridge.rotateStableTunnel();
@@ -237,13 +241,33 @@ function registerIpc() {
 
     const modeChanged = patch && patch.tunnelMode && patch.tunnelMode !== before.tunnelMode;
     if (modeChanged) {
+      bridge.connections.reset('隧道模式已变更');
       bridge.stopTunnel();
       if (next.autoStartTunnel) setTimeout(() => bridge.startTunnel(), 120);
+    } else if (patch && Object.prototype.hasOwnProperty.call(patch, 'namedTunnelHostname') && patch.namedTunnelHostname !== before.namedTunnelHostname) {
+      bridge.connections.reset('固定域名已变更');
+    }
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'approvalTimeoutMs')) {
+      bridge.connections.timeoutMs = Number(next.approvalTimeoutMs) || 180000;
     }
 
     sendToUi('status', bridge.status());
     return configView(next);
   });
+
+  ipcMain.handle('connections:list', () => bridge.connections.list());
+  ipcMain.handle('connections:pending', () => bridge.connections.pendingCount());
+  ipcMain.handle('connections:approve', (e, id) => bridge.connections.approve(id));
+  ipcMain.handle('connections:deny', (e, id) => bridge.connections.deny(id));
+  ipcMain.handle('connections:block', (e, id) => bridge.connections.block(id));
+  ipcMain.handle('connections:unblock', (e, id) => bridge.connections.unblock(id));
+  ipcMain.handle('connections:clear', () => { bridge.connections.clear(); return bridge.connections.list(); });
+
+  ipcMain.handle('memory:list', (e, query, limit) => bridge.memory.list(query, limit));
+  ipcMain.handle('memory:get', (e, id) => bridge.memory.get(id));
+  ipcMain.handle('memory:delete', (e, id) => bridge.memory.remove(id));
+  ipcMain.handle('memory:clear', () => { bridge.memory.clear(); return bridge.memory.list('', 50); });
+  ipcMain.handle('memory:stats', () => bridge.memory.stats());
 
   ipcMain.handle('service:start', async () => { await bridge.start(); return bridge.status(); });
   ipcMain.handle('service:stop', async () => { await bridge.stop(); return bridge.status(); });
@@ -251,9 +275,11 @@ function registerIpc() {
   ipcMain.handle('tunnel:stop', () => { bridge.stopTunnel(); return bridge.status(); });
   ipcMain.handle('tunnel:rotate', () => bridge.rotateStableTunnel());
   ipcMain.handle('tunnel:restart', () => bridge.restartTunnel());
+  ipcMain.handle('tunnel:claim', async () => await bridge.getClaimLink());
 
   ipcMain.handle('token:regenerate', () => {
     const next = updateConfig({ token: crypto.randomBytes(24).toString('base64url') });
+    bridge.connections.reset('访问令牌已更换');
     return { token: next.token };
   });
 
@@ -310,6 +336,20 @@ if (!gotLock) {
     bridge = new Bridge({ cloudflaredPath: resourcePath('cloudflared.exe') || '' });
     bridge.on('status', (s) => sendToUi('status', s));
     bridge.on('activity', (a) => sendToUi('activity', a));
+    bridge.on('connection', (payload) => {
+      sendToUi('connection', payload);
+      if (payload && payload.type === 'request') {
+        if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+        sendToUi('toast', {
+          kind: 'warn',
+          text: '有新的设备请求连接：' + ((payload.record && payload.record.name) || '未知设备')
+        });
+      }
+    });
+    bridge.on('memory', (list) => {
+      sendToUi('memory', list);
+      sendToUi('status', bridge.status());
+    });
 
     registerIpc();
     buildTray();

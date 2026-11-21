@@ -38,10 +38,14 @@ Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
 - **命令黑名单**：`format`、`diskpart`、`rm -rf /` 等危险命令默认拒绝
 - **固定公网地址**：地址与本机 SSH 密钥绑定，重启电脑/程序、断线重连都不变；只有点「更换地址」才会换
 - **多种隧道模式**：固定地址（默认，免费）、cloudflared 临时地址、自有 Cloudflare 域名
+- **连接审批**：新设备请求连接需要在 3 分钟内于「连接记录」中批准，超时自动失效
+- **设备记录**：显示连接过的设备、IP、请求次数，可按设备断开/重新允许
+- **AI 记忆库**：`memory_save` 保存上下文摘要，下一个 AI 用 `memory_search` 读取
+- **工具包**：文件增强、系统运维、桌面辅助、记忆四组内置工具
 - **令牌可控**：访问令牌随时重新生成，旧连接立即失效
 - **绿色卸载**：不写注册表，删除文件夹即卸载
 
-### 10 个内置工具
+### 内置工具包
 
 | 工具 | 作用 |
 |---|---|
@@ -66,9 +70,9 @@ Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
 
 | 平台 | 安装包 |
 |---|---|
-| Windows 10/11 x64 | `zhiqiao-1.2.0-win64.zip`（绿色版，解压即用） |
-| macOS Apple 芯片 (M1–M4) | `zhiqiao-1.2.0-mac-arm64.zip` |
-| macOS Intel | `zhiqiao-1.2.0-mac-x64.zip` |
+| Windows 10/11 x64 | `zhiqiao-1.3.0-win64.zip`（绿色版，解压即用） |
+| macOS Apple 芯片 (M1–M4) | `zhiqiao-1.3.0-mac-arm64.zip` |
+| macOS Intel | `zhiqiao-1.3.0-mac-x64.zip` |
 
 ### 三步连上 AI
 
@@ -128,7 +132,7 @@ Cloudflare 隧道（可选，公网）──► 127.0.0.1:8765
 │  ├─ service.js      HTTP 服务器 + cloudflared 隧道管理
 │  ├─ mcp.js          MCP 协议层（JSON-RPC over streamable HTTP）
 │  ├─ oauth.js        OAuth 2.1 授权服务器（动态注册 + PKCE）
-│  ├─ tools.js        10 个工具实现
+│  ├─ tools.js        内置工具包实现
 │  ├─ pathsafe.js     路径白名单校验
 │  └─ config.js       配置读写（Electron userData）
 ├─ ui/                控制面板（原生 HTML/CSS/JS，无框架）

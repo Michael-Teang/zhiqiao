@@ -20,6 +20,9 @@ const { EventEmitter } = require('node:events');
 
 const { getConfig, getStableKeyDir, updateConfig } = require('./config.js');
 const { handleMessage, createSession } = require('./mcp.js');
+const { ConnectionManager } = require('./connections.js');
+const { MemoryStore } = require('./memory.js');
+const { setMemoryStore } = require('./tools.js');
 const oauth = require('./oauth.js');
 
 function normalizeBaseUrl(value) {
@@ -39,10 +42,24 @@ class Bridge extends EventEmitter {
     this._reconnectTimer = null;
     this._keepaliveTimer = null;
     this._tunnelReadyTimer = null;
+    this._fallbackChild = null;
+    this._fallbackTimer = null;
+    this.connections = new ConnectionManager();
+    this.connections.on('changed', (rec) => {
+      if (rec && ['blocked', 'denied', 'expired'].includes(rec.status)) this._flushAutoMemory(rec.id);
+    });
+    this.memory = new MemoryStore();
+    this._autoMemory = new Map();
+    setMemoryStore(this.memory);
+    this.connections.on('request', (record) => this.emit('connection', { type: 'request', record }));
+    this.connections.on('changed', (record) => this.emit('connection', { type: 'changed', record }));
+    this.connections.on('reset', (reason) => this.emit('connection', { type: 'reset', reason }));
+    this.memory.on('changed', (list) => this.emit('memory', list));
     this.state = {
       running: false,
       port: null,
       tunnel: { state: 'stopped', url: null, error: null, mode: null, claimUrl: null },
+      fallback: { state: 'stopped', url: null, error: null },
       startedAt: null,
       requests: 0,
       toolCalls: 0,
@@ -81,6 +98,7 @@ class Bridge extends EventEmitter {
 
   async stop() {
     this._intentionalStop = true;
+    this._flushAllAutoMemory();
     this.stopTunnel();
     if (this.server) {
       const s = this.server;
@@ -106,8 +124,14 @@ class Bridge extends EventEmitter {
       localUrl: this.state.port ? 'http://' + cfg.host + ':' + this.state.port + '/mcp' : null,
       publicUrl: this._mcpUrl(active),
       savedPublicUrl: this._mcpUrl(configured),
+      fallbackUrl: this._mcpUrl(this.state.fallback && this.state.fallback.url),
+      fallbackState: this.state.fallback ? this.state.fallback.state : 'stopped',
       tunnelMode: cfg.tunnelMode,
       stableTunnelUrl: cfg.stableTunnelUrl || null,
+      addressHistory: cfg.addressHistory || [],
+      pendingConnections: this.connections.pendingCount(),
+      connectionCount: this.connections.list().filter((x) => x.status === 'approved').length,
+      memoryCount: this.memory.stats().count,
       claimUrl: this.state.tunnel.claimUrl || null
     });
   }
@@ -125,6 +149,25 @@ class Bridge extends EventEmitter {
       return cfg.stableTunnelUrl ? normalizeBaseUrl(cfg.stableTunnelUrl) : '';
     }
     return '';
+  }
+
+  /** Keep every generated address so the UI dropdown never becomes empty. */
+  _rememberAddress(base, mode, label) {
+    const url = normalizeBaseUrl(base);
+    if (!url) return;
+    const cfg = getConfig();
+    const history = Array.isArray(cfg.addressHistory) ? cfg.addressHistory.slice() : [];
+    const t = Date.now();
+    const i = history.findIndex((x) => x.url === url);
+    if (i >= 0) {
+      history[i] = Object.assign({}, history[i], { mode, label: label || history[i].label || '', lastSeenAt: t });
+    } else {
+      history.unshift({ url, mode, label: label || '', createdAt: t, lastSeenAt: t });
+    }
+    let quickSeen = 0;
+    const trimmed = history.filter((x) => x.mode !== 'quick' || quickSeen++ < 3).slice(0, 30);
+    updateConfig({ addressHistory: trimmed });
+    this._emitStatus();
   }
 
   _emitStatus() {
@@ -229,10 +272,23 @@ class Bridge extends EventEmitter {
     this._intentionalStop = false;
     clearTimeout(this._reconnectTimer);
     this._reconnectTimer = null;
+    clearTimeout(this._tunnelReadyTimer);
+    this._tunnelReadyTimer = null;
+    this._stopKeepalive();
 
     const cfg = getConfig();
     const mode = cfg.tunnelMode || 'quick';
-    if (mode === 'stable') return this._startStableTunnel(cfg);
+    if (mode === 'stable') {
+      if (!this._fallbackChild && !this._fallbackTimer && this.state.fallback.state === 'stopped') {
+        this._fallbackTimer = setTimeout(() => {
+          this._fallbackTimer = null;
+          if (this.state.tunnel.state !== 'ready') this._startQuickFallback();
+        }, 5000);
+        if (this._fallbackTimer.unref) this._fallbackTimer.unref();
+      }
+      return this._startStableTunnel(cfg);
+    }
+    this._stopFallback();
     if (mode === 'named') return this._startNamedTunnel(cfg);
     return this._startQuickTunnel(cfg);
   }
@@ -261,6 +317,45 @@ class Bridge extends EventEmitter {
     return keyPath;
   }
 
+  /** Ask tunnl.gg for a one-time link that binds the current SSH key to a free account. */
+  getClaimLink() {
+    const keyPath = this._ensureStableKey();
+    const ssh = this.findSsh();
+    const knownHosts = path.join(getStableKeyDir(), 'known_hosts');
+    const host = getConfig().stableTunnelHost || 'proxy.tunnl.gg';
+    const args = [
+      '-tt', '-i', keyPath,
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'UserKnownHostsFile=' + knownHosts,
+      'link@' + host
+    ];
+    return new Promise((resolve) => {
+      let done = false;
+      let buf = '';
+      let timer = null;
+      const child = spawn(ssh, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const finish = (url) => {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        try { child.kill(); } catch (e) {}
+        resolve(url || null);
+      };
+      const scan = (chunk) => {
+        buf += chunk.toString('utf8');
+        const m = /https:\/\/tunnl\.gg\/dashboard\/claim\/[A-Za-z0-9?=&%._\-\/]+/i.exec(buf);
+        if (m) finish(m[0]);
+      };
+      child.stdout.on('data', scan);
+      child.stderr.on('data', scan);
+      child.on('error', () => finish(null));
+      child.on('exit', () => finish(null));
+      timer = setTimeout(() => finish(null), 10000);
+      if (timer.unref) timer.unref();
+    });
+  }
+
   _startStableTunnel(cfg) {
     let keyPath;
     try {
@@ -271,19 +366,24 @@ class Bridge extends EventEmitter {
       return this.state.tunnel;
     }
 
-    const saved = cfg.stableTunnelUrl ? normalizeBaseUrl(cfg.stableTunnelUrl) : null;
-    this.state.tunnel = { state: 'starting', url: saved, error: null, mode: 'stable', claimUrl: null };
+    let saved = cfg.stableTunnelUrl ? normalizeBaseUrl(cfg.stableTunnelUrl) : null;
+    this.state.tunnel = { state: 'starting', url: saved, error: null, mode: 'stable', claimUrl: null, connectStartedAt: Date.now() };
     this._emitStatus();
+    const connectStartedAt = this.state.tunnel.connectStartedAt;
 
     const ssh = this.findSsh();
     const knownHosts = path.join(getStableKeyDir(), 'known_hosts');
     const host = cfg.stableTunnelHost || 'proxy.tunnl.gg';
     const args = [
       '-tt',
+      '-4',
       '-i', keyPath,
       '-o', 'IdentitiesOnly=yes',
       '-o', 'StrictHostKeyChecking=accept-new',
       '-o', 'UserKnownHostsFile=' + knownHosts,
+      '-o', 'ConnectTimeout=10',
+      '-o', 'ConnectionAttempts=1',
+      '-o', 'GSSAPIAuthentication=no',
       '-o', 'ExitOnForwardFailure=yes',
       '-o', 'ServerAliveInterval=15',
       '-o', 'ServerAliveCountMax=3',
@@ -313,9 +413,21 @@ class Bridge extends EventEmitter {
         const url = normalizeBaseUrl(m[0]);
         ready = true;
         clearTimeout(this._tunnelReadyTimer);
-        if (cfg.stableTunnelUrl !== url) updateConfig({ stableTunnelUrl: url });
+        const previous = cfg.stableTunnelUrl ? normalizeBaseUrl(cfg.stableTunnelUrl) : '';
+        if (previous !== url) updateConfig({ stableTunnelUrl: url });
+        if (previous && previous !== url) this.connections.reset('公网地址已更换');
+        saved = url;
+        this._rememberAddress(url, 'stable', '固定地址');
+        this._stopFallback();
         const claimUrl = this.state.tunnel.claimUrl || null;
-        this.state.tunnel = { state: 'ready', url, error: null, mode: 'stable', claimUrl };
+        this.state.tunnel = {
+          state: 'ready',
+          url,
+          error: null,
+          mode: 'stable',
+          claimUrl,
+          connectMs: Date.now() - connectStartedAt
+        };
         this._startKeepalive(url);
         this._emitStatus();
       }
@@ -332,7 +444,7 @@ class Bridge extends EventEmitter {
         url: saved,
         error: 'SSH 隧道启动失败: ' + e.message,
         mode: 'stable',
-        claimUrl: null
+        claimUrl: this.state.tunnel.claimUrl || null
       };
       this._emitStatus();
       this._scheduleReconnect();
@@ -352,7 +464,7 @@ class Bridge extends EventEmitter {
         url: saved,
         error: '隧道连接已断开，正在自动重连（地址不变）',
         mode: 'stable',
-        claimUrl: null
+        claimUrl: this.state.tunnel.claimUrl || null
       };
       this._emitStatus();
       this._scheduleReconnect();
@@ -364,9 +476,11 @@ class Bridge extends EventEmitter {
       this.state.tunnel = {
         state: 'error',
         url: saved,
-        error: 'SSH 隧道连接超时，请检查网络后重试',
+        error: this.state.tunnel.claimUrl
+          ? '固定地址需要绑定免费账号，请点「注册固定地址」后重试；临时加速地址仍可使用'
+          : 'SSH 隧道连接超时，请检查网络后重试',
         mode: 'stable',
-        claimUrl: null
+        claimUrl: this.state.tunnel.claimUrl || null
       };
       this._emitStatus();
     }, 35000);
@@ -420,6 +534,7 @@ class Bridge extends EventEmitter {
       if (!ready && /Registered tunnel connection|Connection [^\n]*registered|Registered tunnel/i.test(text)) {
         ready = true;
         clearTimeout(this._tunnelReadyTimer);
+        this._rememberAddress(base, 'named', '自有域名');
         this.state.tunnel = { state: 'ready', url: base, error: null, mode: 'named', claimUrl: null };
         this._emitStatus();
       }
@@ -457,6 +572,7 @@ class Bridge extends EventEmitter {
     this._tunnelReadyTimer = setTimeout(() => {
       if (ready || !this.tunnel) return;
       ready = true;
+      this._rememberAddress(base, 'named', '自有域名');
       this.state.tunnel = { state: 'ready', url: base, error: null, mode: 'named', claimUrl: null };
       this._emitStatus();
     }, 15000);
@@ -516,6 +632,61 @@ class Bridge extends EventEmitter {
     return this.state.tunnel;
   }
 
+  // ---- quick fallback while the stable tunnel is still connecting ----
+
+  _startQuickFallback() {
+    if (this._fallbackChild) return;
+    const bin = this.findCloudflared();
+    if (!bin) {
+      this.state.fallback = { state: 'error', url: null, error: '找不到 cloudflared 组件' };
+      this._emitStatus();
+      return;
+    }
+    this.state.fallback = { state: 'starting', url: null, error: null };
+    this._emitStatus();
+    const child = spawn(bin, [
+      'tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:' + this.state.port
+    ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    this._fallbackChild = child;
+    const self = this;
+    const scan = (chunk) => {
+      const text = chunk.toString('utf8');
+      const m = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i.exec(text);
+      if (m && self.state.fallback.state !== 'ready') {
+        const url = m[0];
+        self.state.fallback = { state: 'ready', url, error: null };
+        self._emitStatus();
+      }
+    };
+    child.stdout.on('data', scan);
+    child.stderr.on('data', scan);
+    child.on('error', (e) => {
+      self._fallbackChild = null;
+      self.state.fallback = { state: 'error', url: null, error: e.message };
+      self._emitStatus();
+    });
+    child.on('exit', () => {
+      self._fallbackChild = null;
+      if (self.state.fallback.state !== 'stopped') {
+        self.state.fallback = { state: 'stopped', url: null, error: null };
+        self._emitStatus();
+      }
+    });
+  }
+
+  _stopFallback() {
+    clearTimeout(this._fallbackTimer);
+    this._fallbackTimer = null;
+    if (this._fallbackChild) {
+      try { this._fallbackChild.kill(); } catch (e) {}
+      this._fallbackChild = null;
+    }
+    if (this.state.fallback && this.state.fallback.state !== 'stopped') {
+      this.state.fallback = { state: 'stopped', url: null, error: null };
+      this._emitStatus();
+    }
+  }
+
   _scheduleReconnect() {
     if (this._intentionalStop || this._reconnectTimer) return;
     this._reconnectTimer = setTimeout(() => {
@@ -552,6 +723,7 @@ class Bridge extends EventEmitter {
     clearTimeout(this._tunnelReadyTimer);
     this._tunnelReadyTimer = null;
     this._stopKeepalive();
+    this._stopFallback();
 
     if (this.tunnel) {
       try { this.tunnel.kill(); } catch (e) {}
@@ -569,6 +741,8 @@ class Bridge extends EventEmitter {
     if (cfg.tunnelMode !== 'stable') return this.status();
 
     this.stopTunnel();
+    this._flushAllAutoMemory();
+    this.connections.reset('密钥已更换');
 
     const keyPath = this._stableKeyPath();
     const backup = keyPath + '.bak-' + Date.now();
@@ -643,6 +817,111 @@ class Bridge extends EventEmitter {
     res.end();
   }
 
+  async _connectionGate(req, clientInfo) {
+    this.connections.timeoutMs = Number(getConfig().approvalTimeoutMs) || 180000;
+    return await this.connections.authorize(req, clientInfo);
+  }
+
+  _connectionDeny(res, result) {
+    const reason = (result && result.reason) || 'denied';
+    return this._json(res, 403, {
+      error: reason === 'expired' ? 'approval_timeout' : (reason === 'blocked' ? 'connection_blocked' : 'connection_denied'),
+      reason,
+      message: (result && result.message) || '连接未获批准，请重新申请'
+    }, { 'retry-after': '5' });
+  }
+
+  // ------------------------------------------------------- auto memory
+
+  _recordAutoTool(record, call, response) {
+    try {
+      const cfg = getConfig();
+      if (!record || !cfg.autoMemory || cfg.memoryEnabled === false) return;
+      const id = record.id;
+      let s = this._autoMemory.get(id);
+      if (!s) {
+        s = { recordId: id, clientName: record.name, ip: record.ip, startedAt: Date.now(), lastAt: Date.now(), tools: [] };
+        this._autoMemory.set(id, s);
+      }
+      s.clientName = record.name || s.clientName;
+      s.ip = record.ip || s.ip;
+      s.lastAt = Date.now();
+
+      const args = (call.params && call.params.arguments) || {};
+      let argsText;
+      try { argsText = JSON.stringify(args); } catch (e) { argsText = String(args); }
+      let resultText = '';
+      if (response && response.error) {
+        resultText = 'ERROR: ' + (response.error.message || JSON.stringify(response.error));
+      } else if (response && response.result) {
+        if (Array.isArray(response.result.content)) {
+          resultText = response.result.content.map((c) => c.type === 'text' ? c.text : (c.type === 'image' ? '[image]' : '')).join('\n');
+        } else {
+          resultText = JSON.stringify(response.result);
+        }
+      }
+      s.tools.push({
+        name: (call.params && call.params.name) || '?',
+        args: String(argsText || '').slice(0, 800),
+        result: String(resultText || '').slice(0, 1200),
+        at: Date.now()
+      });
+      if (s.tools.length > 60) s.tools = s.tools.slice(-60);
+
+      clearTimeout(s.timer);
+      const idleMs = Math.max(Number(cfg.autoMemoryIdleMs) || 60000, 10000);
+      s.timer = setTimeout(() => this._flushAutoMemory(id), idleMs);
+      if (s.timer.unref) s.timer.unref();
+    } catch (e) {
+      console.error('[auto-memory] record failed:', e.message);
+    }
+  }
+
+  _flushAutoMemory(recordId) {
+    const s = this._autoMemory.get(recordId);
+    if (!s) return null;
+    const cfg = getConfig();
+    if (!cfg.autoMemory || cfg.memoryEnabled === false) {
+      this._autoMemory.delete(recordId);
+      clearTimeout(s.timer);
+      return null;
+    }
+    this._autoMemory.delete(recordId);
+    clearTimeout(s.timer);
+    if (!s.tools.length) return null;
+    try {
+      const stamp = new Date(s.startedAt).toLocaleString('zh-CN', { hour12: false });
+      const names = Array.from(new Set(s.tools.map((t) => t.name)));
+      const title = '自动记忆 · ' + (s.clientName || 'AI') + ' · ' + stamp;
+      const summary = '本次会话自动记录 ' + s.tools.length + ' 次工具调用：' + names.join('、').slice(0, 240);
+      const lines = [
+        '客户端: ' + (s.clientName || '未知') + (s.ip ? ' · IP ' + s.ip : ''),
+        '开始时间: ' + stamp,
+        '工具调用:'
+      ];
+      s.tools.forEach((t, i) => {
+        lines.push((i + 1) + '. ' + t.name);
+        if (t.args && t.args !== '{}') lines.push('   参数: ' + t.args);
+        if (t.result) lines.push('   结果: ' + t.result);
+      });
+      lines.push('', '说明: 本条由智桥在会话空闲/结束时自动生成，仅记录工具调用，不包含 AI 的完整回答。');
+      return this.memory.save({
+        title,
+        summary,
+        content: lines.join('\n'),
+        tags: ['auto', 'session'],
+        source: { clientName: s.clientName, ip: s.ip, sessionId: recordId, auto: true }
+      });
+    } catch (e) {
+      console.error('[auto-memory] flush failed:', e.message);
+      return null;
+    }
+  }
+
+  _flushAllAutoMemory() {
+    for (const id of Array.from(this._autoMemory.keys())) this._flushAutoMemory(id);
+  }
+
   // ---------------------------------------------------------------- router
 
   async _handle(req, res) {
@@ -710,6 +989,8 @@ class Bridge extends EventEmitter {
 
     if (pathname === '/mcp' || pathname === '/mcp/') {
       if (req.method === 'GET') {
+        const gate = await this._connectionGate(req, null);
+        if (!gate.allowed) return this._connectionDeny(res, gate);
         const sid = createSession();
         res.writeHead(200, {
           'content-type': 'text/event-stream; charset=utf-8',
@@ -718,6 +999,7 @@ class Bridge extends EventEmitter {
           'mcp-session-id': sid
         });
         res.write('event: endpoint\ndata: /mcp/\n\n');
+        this.connections.registerSse(gate.record.id, res);
         const timer = setInterval(() => { try { res.write(': ping\n\n'); } catch (e) {} }, 25000);
         req.on('close', () => clearInterval(timer));
         return;
@@ -725,27 +1007,51 @@ class Bridge extends EventEmitter {
 
       if (req.method !== 'POST') return json(res, 405, { error: 'use POST' });
 
+      let bodyText;
+      try {
+        bodyText = await this._readBody(req);
+      } catch (e) {
+        return json(res, 413, { jsonrpc: '2.0', id: null, error: { code: -32600, message: e.message } });
+      }
+
       let payload;
       try {
-        payload = JSON.parse(await this._readBody(req));
+        payload = JSON.parse(bodyText);
       } catch (e) {
         return json(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: e.message } });
       }
 
       const batch = Array.isArray(payload) ? payload : [payload];
+      const initMsg = batch.find((m) => m && m.method === 'initialize');
+      const clientInfo = initMsg && initMsg.params && initMsg.params.clientInfo;
+      const gate = await this._connectionGate(req, clientInfo);
+      if (!gate.allowed) return this._connectionDeny(res, gate);
+
       const out = [];
+      const ctx = {
+        allowedRoots: getConfig().allowedRoots,
+        clientName: gate.record && gate.record.name,
+        clientIp: gate.record && gate.record.ip,
+        sessionId: gate.record && gate.record.id
+      };
       for (const msg of batch) {
-        const r = await handleMessage(msg, { allowedRoots: getConfig().allowedRoots });
+        const r = await handleMessage(msg, ctx);
         if (r) out.push(r);
       }
 
       this.state.requests++;
-      const call = batch.find((m) => m && m.method === 'tools/call');
-      if (call) {
+      const calls = batch.filter((m) => m && m.method === 'tools/call');
+      calls.forEach((call) => {
+        const toolName = (call.params && call.params.name) || '?';
         this.state.toolCalls++;
-        this.state.lastCall = { tool: (call.params && call.params.name) || '?', at: Date.now() };
+        this.state.lastCall = { tool: toolName, at: Date.now() };
+        if (gate.record) {
+          this.connections.noteTool(gate.record.id, toolName);
+          const response = out.find((r) => r && r.id === call.id) || null;
+          this._recordAutoTool(gate.record, call, response);
+        }
         this.emit('activity', this.state.lastCall);
-      }
+      });
 
       if (!out.length) { res.writeHead(202); return res.end(); }
       return json(res, 200, Array.isArray(payload) ? out : out[0], {
